@@ -39,7 +39,7 @@ from nanoGPT.model_pad_gemb import GPT as GPT_gemb
 from nanoGPT.model_pad import GPTConfig as GPTConfig_nogemb
 from nanoGPT.model_pad import GPT as GPT_nogemb
 
-from util import generate_circ_from_df, eval_adapt_gpt_circ_jl
+from src.circuit_util import generate_circ_from_df, eval_adapt_gpt_circ_jl
 
 # val_sampled_df = pd.read_pickle('data/qaoa_n10w_012325_v7/test_run_df.pkl')
 # val_graph_emb_np = np.load(
@@ -50,7 +50,7 @@ from util import generate_circ_from_df, eval_adapt_gpt_circ_jl
 
 
 
-n_epochs = 3 # (approximately)
+n_epochs = 10 # (approximately)
 eval_ar_every = 1000
 
 # -----------------------------------------------------------------------------
@@ -58,17 +58,17 @@ eval_ar_every = 1000
 # I/O
 out_dir = 'out'
 eval_interval = 20_000
-log_interval = 1
+log_interval = 100
 eval_iters = 200
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
-wandb_log = False # disabled by default
-wandb_project = 'owt'
-wandb_run_name = 'gpt2' # 'run' + str(time.time())
+wandb_log = True # disabled by default
+wandb_project = 'adapt_llm'
+wandb_run_name = f"gpt2_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}" # 'run' + str(time.time())
 # data
-dataset = 'openwebtext'
+dataset = '8_nodes'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
@@ -98,7 +98,7 @@ dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported
 compile = True # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-use_graph_emb = False
+use_graph_emb = True
 pool_type = "qaoa_double_pool"
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
@@ -147,6 +147,7 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 
 # poor man's data loader
 data_dir = os.path.join('data', dataset)
+print(f'data_dir: {data_dir}')
 
 mmap='r'
 mmap=None

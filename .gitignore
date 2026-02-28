@@ -10,3 +10,13 @@ __pycache__/
 input.txt
 env/
 venv/
+
+temp_data/
+
+models/
+
+data/test/
+
+data/
+*.pt
+wandb/
