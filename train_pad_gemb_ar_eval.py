@@ -30,7 +30,7 @@ from datetime import datetime
 import numpy as np
 import torch
 import json
-
+import argparse
 
 from nanoGPT.model_pad_gemb import GPTConfig as GPTConfig_gemb
 from nanoGPT.model_pad_gemb import GPT as GPT_gemb
@@ -38,7 +38,7 @@ from nanoGPT.model_pad_gemb import GPT as GPT_gemb
 from src.circuit_util import generate_circ_from_df, eval_adapt_gpt_circ_jl
 
 eval_ar_every = 10000
-
+embedding_method = 'feather'
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -81,16 +81,48 @@ device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps'
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = True # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
+
+# ---------------- parser ----------------
+parser = argparse.ArgumentParser()
+
+parser.add_argument(
+    "--train_config_path",
+    type=str,
+    default="/data/10_nodes/train_adapt_gpt_config.py",
+    help="Path to train config file",
+)
+
+parser.add_argument(
+    "--model_type",
+    type=str,
+    choices=["gpt", "llama"],
+    default="gpt",
+    help="Model type",
+)
+
+args, unknown = parser.parse_known_args()
+
+train_config_path = args.train_config_path
+model_type = args.model_type
+
+print("train_config_path =", train_config_path)
+print("model_type =", model_type)
+
+# ---------------- load config file ----------------
+if os.path.exists(train_config_path):
+    print(f"Loading config from {train_config_path}")
+    exec(open(train_config_path).read())
+else:
+    print("Config file not found, using defaults")
+
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 use_graph_emb = True
 pool_type = "qaoa_double_pool"
-exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
 
 print("Training model with graph embeddings")
-model_suf = 'gemb'
 
 os.makedirs(out_dir, exist_ok=True)
 
@@ -115,7 +147,7 @@ val_data = np.load(
     os.path.join(data_dir, 'val.npy'), mmap_mode=mmap
 )
 graph_emb_np = np.load(
-    os.path.join(data_dir, 'feather_emb_d500.npy'), mmap_mode=mmap
+    os.path.join(data_dir, f'{embedding_method}_emb_d500.npy'), mmap_mode=mmap
 )
 emb_dim = graph_emb_np.shape[1]
 
@@ -367,7 +399,7 @@ for i in pbar:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0:
         losses = estimate_loss()
-        saving_model_name = f'ckpt_{i}_{model_suf}.pt'
+        saving_model_name = f'{model_type}_ckpt_{i}_{embedding_method}.pt'
         if iter_num >= 3000 and iter_num % eval_ar_every == 0:
 
             print("\tEvaluating model ER and AR...")
@@ -382,7 +414,7 @@ for i in pbar:
             print(f"\tCurrent ar: {cur_ar}, error rate: {cur_er}\n\n")
             cur_ar_str = str(cur_ar).replace('.', '_')
             cur_er_str = str(cur_er).replace('.', '_')
-            saving_model_name = f'ckpt_{i}_{model_suf}__ar_{cur_ar_str}__er_{cur_er_str}.pt'
+            saving_model_name = f'{model_type}_ckpt_{i}_{embedding_method}_ar_{cur_ar_str}__er_{cur_er_str}.pt'
 
             logging_list.append(
                 {
