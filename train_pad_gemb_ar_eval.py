@@ -23,7 +23,7 @@ from src.circuit_util import generate_circ_from_df, eval_adapt_gpt_circ_jl
 
 eval_ar_every = 10000
 embedding_method = 'feather'
-random_seed = 42
+random_seed = 1337
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
