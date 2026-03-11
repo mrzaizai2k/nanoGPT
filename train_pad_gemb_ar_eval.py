@@ -1,21 +1,3 @@
-"""
-This training script can be run both on a single gpu in debug mode,
-and also in a larger training run with distributed data parallel (ddp).
-
-To run on a single GPU, example:
-$ python train.py --batch_size=32 --compile=False
-
-To run with DDP on 4 gpus on 1 node, example:
-$ torchrun --standalone --nproc_per_node=4 train.py
-
-To run with DDP on 4 gpus across 2 nodes, example:
-- Run on the first (master) node with example IP 123.456.123.456:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 --master_addr=123.456.123.456 --master_port=1234 train.py
-- Run on the worker node:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123.456 --master_port=1234 train.py
-(If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
-"""
-
 import os
 import time
 import math
@@ -32,13 +14,17 @@ import torch
 import json
 import argparse
 
-from nanoGPT.model_pad_gemb import GPTConfig as GPTConfig_gemb
-from nanoGPT.model_pad_gemb import GPT as GPT_gemb
+from nanoGPT.model_pad_gemb import GPTConfig
+from nanoGPT.model_pad_gemb import GPT
+
+from nanoGPT.model_llama import Llama, LlamaConfig
 
 from src.circuit_util import generate_circ_from_df, eval_adapt_gpt_circ_jl
 
 eval_ar_every = 10000
 embedding_method = 'feather'
+random_seed = 42
+
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -51,7 +37,6 @@ init_from = 'scratch' # 'scratch' or 'resume'
 # wandb logging
 wandb_log = True # disabled by default
 wandb_project = 'adapt_llm'
-wandb_run_name = f"gpt2_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}" # 'run' + str(time.time())
 # data
 dataset = '8_nodes'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
@@ -121,12 +106,13 @@ pool_type = "qaoa_double_pool"
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
+wandb_run_name = f"{model_type}_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}" # 'run' + str(time.time())
+
 
 print("Training model with graph embeddings")
 
 os.makedirs(out_dir, exist_ok=True)
-
-torch.manual_seed(1337)
+torch.manual_seed(random_seed)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
@@ -189,7 +175,7 @@ def get_test_energies_df():
 
     print("Generating circuits with current state of the model")
     gc_df = generate_circ_from_df(
-        val_sampled_df[:100], # only eval on 100 samples for speed
+        val_sampled_df.sample(n=min(100, len(val_sampled_df))),
         model=model,
         graph_emb_np=val_graph_emb_np if use_graph_emb else None,
         emb_graph_id_to_idx_dict=val_emb_graph_id_to_idx_dict if use_graph_emb else None,
@@ -243,13 +229,17 @@ def eval_model_ar():
 
     return test_energies_df, avg_ar, wrong_circ_rate
 
-#-------------------------
-#-------------------------
-#-------------------------
+#------------------------------------------
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
 best_val_loss = 1e9
+
+# early stopping
+early_stopping = True
+patience = 3   # number of evals without improvement before stopping
+no_improve_count = 0
+
 
 # attempt to derive vocab_size from the dataset
 meta_path = os.path.join(data_dir, 'meta.pkl')
@@ -279,52 +269,94 @@ val_emb_graph_id_to_idx_dict = meta['emb_graph_id_to_idx_dict']
 
 ##########################################
 
+# -------------------------------------------------
+# MODEL INIT (GPT or LLAMA)
+# -------------------------------------------------
 
-# model init
-model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
+model_args = dict(
+    n_layer=n_layer,
+    n_head=n_head,
+    n_embd=n_embd,
+    block_size=block_size,
+    bias=bias,
+    vocab_size=None,
+    dropout=dropout,
+)
 
+if init_from == "scratch":
 
-if init_from == 'scratch':
-    # init a new model from scratch
-    print("Initializing a new model from scratch")
-    # determine the vocab size we'll use for from-scratch training
+    print(f"Initializing new model: {model_type}")
+
     if meta_vocab_size is None:
-        print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
-    model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
+        print("default vocab_size 50304")
+        vocab_size = 50304
+    else:
+        vocab_size = meta_vocab_size
 
-    gptconf = GPTConfig_gemb(**model_args)
-    model = GPT_gemb(gptconf)
+    if model_type == "gpt":
 
-elif init_from == 'resume':
+        model_args["vocab_size"] = vocab_size
+
+        gptconf = GPTConfig(**model_args)
+        model = GPT(gptconf)
+
+    elif model_type == "llama":
+
+        model_args["vocab_size"] = vocab_size
+        model_args["graph_emb_dim"] = emb_dim
+
+        llama_conf = LlamaConfig(**model_args)
+        model = Llama(llama_conf)
+
+
+elif init_from == "resume":
+
     print(f"Resuming training from {out_dir}")
-    # resume training from a checkpoint.
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
-    checkpoint = torch.load(ckpt_path, map_location=device)
-    checkpoint_model_args = checkpoint['model_args']
-    # force these config attributes to be equal otherwise we can't even resume training
-    # the rest of the attributes (e.g. dropout) can stay as desired from command line
-    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
-        model_args[k] = checkpoint_model_args[k]
-    # create the model
-    gptconf = GPTConfig_gemb(**model_args)
-    model = GPT_gemb(gptconf)
 
-    state_dict = checkpoint['model']
-    # fix the keys of the state dictionary :(
-    # honestly no idea how checkpoints sometimes get this prefix, have to debug more
-    unwanted_prefix = '_orig_mod.'
-    for k,v in list(state_dict.items()):
+    ckpt_path = os.path.join(out_dir, "ckpt.pt")
+    checkpoint = torch.load(ckpt_path, map_location=device)
+
+    checkpoint_model_args = checkpoint["model_args"]
+
+    for k in [
+        "n_layer",
+        "n_head",
+        "n_embd",
+        "block_size",
+        "bias",
+        "vocab_size",
+    ]:
+        model_args[k] = checkpoint_model_args[k]
+
+    if model_type == "gpt":
+
+        gptconf = GPTConfig(**model_args)
+        model = GPT(gptconf)
+
+    else:
+
+        model_args["graph_emb_dim"] = emb_dim
+        llama_conf = LlamaConfig(**model_args)
+        model = Llama(llama_conf)
+
+    state_dict = checkpoint["model"]
+
+    unwanted_prefix = "_orig_mod."
+    for k, v in list(state_dict.items()):
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+
     model.load_state_dict(state_dict)
-    iter_num = checkpoint['iter_num']
-    best_val_loss = checkpoint['best_val_loss']
+
+    iter_num = checkpoint["iter_num"]
+    best_val_loss = checkpoint["best_val_loss"]
+
 
 # crop down the model block size if desired, using model surgery
-if block_size < model.config.block_size:
+if model_type == "gpt" and block_size < model.config.block_size:
     model.crop_block_size(block_size)
     model_args['block_size'] = block_size # so that the checkpoint will have the right value
+
 model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
@@ -397,10 +429,10 @@ for i in pbar:
         param_group['lr'] = lr
     
     # evaluate the loss on train/val sets and write checkpoints
-    if iter_num % eval_interval == 0:
+    if iter_num % eval_interval == 0 and iter_num > 0:
         losses = estimate_loss()
         saving_model_name = f'{model_type}_ckpt_{i}_{embedding_method}.pt'
-        if iter_num >= 3000 and iter_num % eval_ar_every == 0:
+        if iter_num >= 500 and iter_num % eval_ar_every == 0:
 
             print("\tEvaluating model ER and AR...")
             cur_test_energies_df, cur_ar, cur_er = eval_model_ar()
@@ -444,18 +476,28 @@ for i in pbar:
         #if losses['val'] < best_val_loss or always_save_checkpoint:
         if losses['val'] < best_val_loss:
             best_val_loss = losses['val']
-        if iter_num > 0:
-            checkpoint = {
-                'model': model.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'model_args': model_args,
-                'iter_num': iter_num,
-                'best_val_loss': best_val_loss,
-                'config': config,
-            }
-            print(f"saving checkpoint to {out_dir}")
-            torch.save(checkpoint, os.path.join(out_dir, saving_model_name))
+            no_improve_count = 0   # reset counter
+
+            if iter_num > 500:
+                checkpoint = {
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'model_args': model_args,
+                    'iter_num': iter_num,
+                    'best_val_loss': best_val_loss,
+                    'config': config,
+                }
+                print(f"saving checkpoint to {out_dir}")
+                torch.save(checkpoint, os.path.join(out_dir, saving_model_name))
         
+        else:
+            no_improve_count += 1
+            print(f"No improvement count: {no_improve_count}/{patience}")
+
+            if early_stopping and no_improve_count >= patience:
+                print("Early stopping triggered!")
+                break
+            
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
     # and using the GradScaler if data type is float16
