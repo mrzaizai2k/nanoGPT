@@ -24,7 +24,7 @@ from src.circuit_util import generate_circ_from_df, eval_adapt_gpt_circ_jl
 eval_ar_every = 10000
 embedding_method = 'feather'
 random_seed = 1337
-
+n_nodes = 10
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -106,7 +106,7 @@ pool_type = "qaoa_double_pool"
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
-wandb_run_name = f"{model_type}_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}" # 'run' + str(time.time())
+wandb_run_name = f"{model_type}_run_{n_nodes}_{embedding_method}_{datetime.now().strftime('%Y%m%d_%H%M%S')}" # 'run' + str(time.time())
 
 
 print("Training model with graph embeddings")
@@ -136,6 +136,9 @@ graph_emb_np = np.load(
     os.path.join(data_dir, f'{embedding_method}_emb_d500.npy'), mmap_mode=mmap
 )
 emb_dim = graph_emb_np.shape[1]
+
+config["num_train_samples"] = len(train_data)
+config["num_val_samples"] = len(val_data)
 
 logging_json_file = os.path.join(out_dir, 'train_log.json')
 logging_list = []
