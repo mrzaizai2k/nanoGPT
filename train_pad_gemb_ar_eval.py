@@ -23,7 +23,7 @@ from src.circuit_util import generate_circ_from_df, eval_adapt_gpt_circ_jl
 
 eval_ar_every = 10000
 embedding_method = 'feather'
-random_seed = 1337
+seed = 1337
 n_nodes = 10
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -112,7 +112,7 @@ wandb_run_name = f"{model_type}_run_{n_nodes}_{embedding_method}_{datetime.now()
 print("Training model with graph embeddings")
 
 os.makedirs(out_dir, exist_ok=True)
-torch.manual_seed(random_seed)
+torch.manual_seed(seed)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
