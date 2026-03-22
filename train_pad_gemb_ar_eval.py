@@ -214,8 +214,11 @@ def eval_model_ar():
     print("Model evaluation...")
     test_energies_df = get_test_energies_df()
 
+    test_circ_eval_expl_df = test_energies_df.explode(['adapt_gpt_energies', 'q_circuits']) 
+    n_layers = test_circ_eval_expl_df['q_circuits'].apply(lambda x: x.count('new_layer_p')).mean()
+
     test_energies_expl_df = test_energies_df[['adapt_gpt_energies', 'energy_mqlib']].explode('adapt_gpt_energies')
-    
+
     test_energies_expl_corr_df = test_energies_expl_df[
         test_energies_expl_df['adapt_gpt_energies'] != 999
     ]
@@ -230,7 +233,8 @@ def eval_model_ar():
     
     wrong_circ_rate = round(len(test_energies_expl_inc_df) / len(test_energies_expl_df), 5)
 
-    return test_energies_df, avg_ar, wrong_circ_rate
+
+    return test_energies_df, avg_ar, wrong_circ_rate, n_layers
 
 #------------------------------------------
 
@@ -438,12 +442,13 @@ for i in pbar:
         if iter_num >= 500 and iter_num % eval_ar_every == 0:
 
             print("\tEvaluating model ER and AR...")
-            cur_test_energies_df, cur_ar, cur_er = eval_model_ar()
+            cur_test_energies_df, cur_ar, cur_er, n_layers = eval_model_ar()
             if wandb_log:
                 wandb.log({
                     "iter": iter_num,
                     "val/ar": cur_ar,
                     "val/er": cur_er,
+                    "n_layers": n_layers,
                 })
 
             print(f"\tCurrent ar: {cur_ar}, error rate: {cur_er}\n\n")
