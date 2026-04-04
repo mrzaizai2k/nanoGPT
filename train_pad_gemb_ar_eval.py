@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from tqdm import tqdm
 import sys
 import pandas as pd
+from typing import Tuple
 sys.path.append("../")
 
 from datetime import datetime
@@ -20,6 +21,7 @@ from nanoGPT.model_pad_gemb import GPT
 from nanoGPT.model_llama import Llama, LlamaConfig
 
 from src.circuit_util import generate_circ_from_df, eval_adapt_gpt_circ_jl
+from src.adapt_utils import compute_metrics 
 
 eval_ar_every = 10000
 embedding_method = 'feather'
@@ -209,30 +211,22 @@ def get_test_energies_df():
     model.train()
     return energies_jl_gc_df
 
-def eval_model_ar():
 
+def eval_model_ar() -> Tuple[pd.DataFrame, float, float, float]:
+    """
+    Evaluate model performance on test set.
+
+    Returns:
+        - test_energies_df: original dataframe
+        - avg_ar: dataset-level approximation ratio
+        - wrong_circ_rate: dataset-level error rate
+        - n_layers: dataset-level average number of layers
+    """
     print("Model evaluation...")
+
     test_energies_df = get_test_energies_df()
 
-    test_circ_eval_expl_df = test_energies_df.explode(['adapt_gpt_energies', 'q_circuits']) 
-    n_layers = test_circ_eval_expl_df['q_circuits'].apply(lambda x: x.count('new_layer_p')).mean()
-
-    test_energies_expl_df = test_energies_df[['adapt_gpt_energies', 'energy_mqlib']].explode('adapt_gpt_energies')
-
-    test_energies_expl_corr_df = test_energies_expl_df[
-        test_energies_expl_df['adapt_gpt_energies'] != 999
-    ]
-    
-    test_energies_expl_corr_df['ar'] = test_energies_expl_corr_df['adapt_gpt_energies'] / test_energies_expl_corr_df['energy_mqlib']
-    
-    avg_ar = round(test_energies_expl_corr_df['ar'].mean(), 5)
-    
-    test_energies_expl_inc_df = test_energies_expl_df[
-        test_energies_expl_df['adapt_gpt_energies'] == 999
-    ]
-    
-    wrong_circ_rate = round(len(test_energies_expl_inc_df) / len(test_energies_expl_df), 5)
-
+    avg_ar, wrong_circ_rate, n_layers = compute_metrics(test_energies_df)
 
     return test_energies_df, avg_ar, wrong_circ_rate, n_layers
 
